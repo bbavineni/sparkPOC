@@ -1,0 +1,194 @@
+import org.gradle.plugins.ide.eclipse.model.SourceFolder
+
+description = "Spark POC"
+apply plugin: "java"
+apply plugin: "maven"
+
+buildscript {
+    repositories {
+        maven { url 'http://dc1udtlhart02.stack.qadev.corp:8081/artifactory/repositories' }
+    }
+    dependencies {
+        classpath 'org.springframework.build.gradle:propdeps-plugin:0.0.4'
+    }
+}
+
+allprojects {
+    version = '1.0.1'
+    group = "com.epsilon.spark.poc"
+
+    apply plugin: 'eclipse'
+    apply plugin: 'maven'
+
+    // task to create the wrapper
+    task wrapper(type: Wrapper) {
+        gradleVersion = '2.4'
+        distributionUrl = 'http://dc1udtlhart02.stack.qadev.corp:8081/artifactory/re-sandbox-local/gradle-2.4-bin.zip'
+    }
+
+ }
+
+
+allprojects {
+    apply plugin: 'java'
+    apply plugin: 'eclipse-wtp'
+
+    apply plugin: 'propdeps'
+    apply plugin: 'propdeps-maven'
+    apply plugin: 'propdeps-eclipse'
+
+    apply plugin: 'jacoco'
+    apply plugin: 'maven'
+
+    sourceCompatibility = 1.8
+    targetCompatibility = 1.8
+
+    repositories {
+        maven { url 'http://dc1udtlhart02.stack.qadev.corp:8081/artifactory/repositories' }
+        maven { url 'http://cds-artifactory.stack.qadev.corp:8081/artifactory/libs-snapshot-local' }
+        maven { url 'https://mvnrepository.com/artifact/com.cloudera.livy/livy-api' }
+    }
+
+    // generate coverage report after running tests:
+    test.doLast {
+        tasks.jacocoTestReport.execute()
+    }
+
+    // Eclipse configurations:
+    // add code formatter and compiler settings
+    task copyEclipseSettings << {
+        copy {
+            from rootProject.file('gradle/eclipse.settings')
+            into '.settings'
+        }
+    }
+    eclipseJdt.dependsOn copyEclipseSettings
+
+    // Use separate main/test outputs (prevents WTP from packaging test classes)
+    eclipse.classpath.defaultOutputDir = file("bin/main")
+    eclipse.classpath.file.whenMerged { classpath ->
+        classpath.entries.findAll{ it instanceof SourceFolder }.each {
+            it.output = "bin/" + it.path.split("/")[1]
+        }
+    }
+
+    // clean old files from bin
+    task cleanEclipseBin {
+        onlyIf { project.file('bin').exists() }
+        doLast {
+            ant.delete(includeEmptyDirs: true, defaultExcludes: false) {
+                fileset(dir: project.file('bin'), excludes: sourceSets.collect{it.name + '/**'}.join(','), defaultExcludes: false)
+            }
+        }
+    }
+    eclipseJdt.dependsOn cleanEclipseBin
+
+    // prevent access to java.util.logging package
+    // and javax.jdo
+    eclipse.classpath.file.whenMerged { classpath ->
+        classpath.entries.each { cp ->
+               if(cp.path == 'org.eclipse.jdt.launching.JRE_CONTAINER') {
+                   cp.accessRules += new org.gradle.plugins.ide.eclipse.model.AccessRule('nonaccessible', 'java/util/logging/**')
+               } else if (cp.kind == 'lib' ) {
+                   cp.accessRules += new org.gradle.plugins.ide.eclipse.model.AccessRule('nonaccessible', 'javax/jdo/**')
+               }
+           }
+    }
+
+    // create all source directories eclipse
+    eclipseProject.doLast {
+        boolean hasJava = project.plugins.hasPlugin('java')
+        if (hasJava) {
+            sourceSets*.java.srcDirs*.each      { it.mkdirs() }
+            sourceSets*.resources.srcDirs*.each { it.mkdirs() }
+        }
+    }
+
+    dependencies {
+        provided group: 'org.projectlombok', name: 'lombok', version: '1.16.2'
+    }
+
+    task afterEclipseImport {
+        doLast {
+            // remove spring nature and build command
+            def xml = new XmlParser().parse(file('.project'))
+            xml.natures.nature.findAll{ it.text() == 'org.springframework.ide.eclipse.core.springnature' }.each{ it.parent().remove(it) }
+            xml.buildSpec.buildCommand.findAll{ it.name.text() == 'org.springframework.ide.eclipse.core.springbuilder' }.each{ it.parent().remove(it) }
+
+            file('.project').withWriter { writer ->
+                writer << '<?xml version="1.0" encoding="UTF-8"?>\n'
+                def printer = new XmlNodePrinter(new PrintWriter(writer), '    ')
+                printer.preserveWhitespace = true
+                printer.print(xml)
+            }
+        }
+    }
+
+    test {
+        jvmArgs '-XX:MaxPermSize=256m'
+    }
+
+}
+
+
+dependencies {
+    compile group: 'net.sf.opencsv', name: 'opencsv', version: '2.3'
+
+     def apacheCommonsVersion = '3.4'
+    compile group: 'org.apache.commons', name:'commons-lang3', version: apacheCommonsVersion
+
+    def hadoopVersion="2.6.0-cdh5.8.3"
+    compile (group: 'org.apache.hadoop', name: 'hadoop-client', version: hadoopVersion) {
+        exclude(module: 'curator-recipes')
+        exclude(module: 'curator-framework')
+        exclude(module: 'curator-client')
+    }
+
+    def sparkVersion="2.1.0"
+    compile group: 'org.apache.spark', name: 'spark-graphx_2.11', version: "${sparkVersion}"
+    compile group: 'org.apache.spark', name: 'spark-catalyst_2.11', version: "${sparkVersion}"
+    compile group: 'org.apache.spark', name: 'spark-streaming_2.11', version: "${sparkVersion}"
+    compile group: 'org.apache.spark', name: 'spark-core_2.11', version: "${sparkVersion}"
+    compile group: 'org.apache.spark', name: 'spark-sql_2.11', version: "${sparkVersion}"
+    compile group: 'org.apache.spark', name: 'spark-yarn_2.11', version: "${sparkVersion}"
+
+    def log4jVersion = "1.2.17"
+    compile group: 'log4j', name: 'log4j', version: log4jVersion
+    compile group: 'log4j', name: 'apache-log4j-extras', version: log4jVersion
+
+    def jacksonVersion = "2.7.3"
+    compile group: 'com.fasterxml.jackson.core', name: 'jackson-core', version: jacksonVersion
+    compile group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version:jacksonVersion
+    compile group: 'com.fasterxml.jackson.datatype', name: 'jackson-datatype-joda', version: jacksonVersion
+
+    def springVersion = "4.2.4.RELEASE"
+    compile(group: 'org.springframework', name: 'spring-context-support', version: springVersion) {
+        exclude(module: 'commons-logging')
+    }
+    compile group: 'org.springframework.security.kerberos', name: 'spring-security-kerberos-client', version: '1.0.1.RELEASE'
+
+    compile group: 'org.springframework.retry', name:'spring-retry', version: '1.1.2.RELEASE'
+    compile group: 'org.springframework', name: 'spring-webmvc', version:springVersion
+    compile group: 'org.springframework', name: 'spring-web', version:springVersion
+    compile group: 'org.springframework', name: 'spring-orm', version: springVersion
+    compile group: 'org.springframework', name: 'spring-aspects', version: springVersion
+    compile group: 'org.springframework', name: 'spring-jms', version:springVersion
+    compile group: 'org.springframework', name: 'spring-aop', version:springVersion
+    testCompile group: 'org.springframework', name:"spring-test", version:springVersion
+
+
+    def apacheHttpClientVersion = '4.5.2'
+    compile group: 'org.apache.httpcomponents', name:'httpclient', version:apacheHttpClientVersion
+
+    def slf4jVersion = "1.7.20"
+    compile group: 'org.slf4j', name: 'slf4j-api', version: slf4jVersion
+    compile group: 'org.slf4j', name: 'jcl-over-slf4j', version: slf4jVersion
+    compile group: 'org.slf4j', name: 'slf4j-log4j12', version: slf4jVersion
+
+    provided group: 'javax.servlet', name: 'javax.servlet-api', version: '3.0.1'
+
+    compile group: 'com.cloudera.livy', name: 'livy-api', version: '0.3.0'
+
+}
+
+
